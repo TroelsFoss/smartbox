@@ -1,0 +1,71 @@
+# Smartbox PF.conf firewall
+
+# Note:
+# Uses multiple routing domains, main is routing domain 0
+# Routing domain 1 is for LAN, which uses same addresses as rdomain 0
+# Guest network is also in routing domain 1 - easier for one dhcpd
+table <VOIP_SERVERS> const { 185.60.163.64/28 185.161.127.64/28 185.17.93.5/32 }
+table <HOSTED_NETWORKS> const { 185.60.160.0/22 }
+table <ADMINISTRATORS> const { 185.60.160.0/22 185.161.124.0/22 213.150.61.162 10.0.42.0/24 192.168.1.0/24 10.100.14.0/24 }
+table <NHN> persist counters # BGP table with all NHN routes
+
+# default parameters
+set block-policy drop
+set loginterface egress
+set state-defaults pflow
+set optimization normal
+set ruleset-optimization basic
+set limit { states 200000 }
+
+# https://man.openbsd.org/pf.conf#QUEUEING
+# Queue to fix TCP originating from our smartbox, if we send more than
+# bandwidth the shaping done by Telenor cause huge backoffs
+queue upload on em3 bandwidth 20M max 20M
+  queue up_high parent upload bandwidth 5M min 5M max 5M
+  queue up_normal parent upload bandwidth 20M max 20M default
+  queue up_guest parent upload bandwidth 10M max 10M
+
+# Download queues
+queue download on em2 bandwidth 20M max 20M
+  queue dn_high parent download bandwidth 5M min 5M max 5M
+  queue dn_normal parent download bandwidth 20M max 20M default
+
+# Wifi
+queue guest on em0 bandwidth 10M max 10M
+  queue dn_guest parent guest bandwidth 5M max 5M burst 10M for 1000ms default
+
+# Rules start here
+block all
+
+# Allow ping from outside world
+pass in on outside inet proto icmp from any to (vlan100:0) icmp-type echoreq
+
+# Allow SSH from Administrators
+pass in on outside inet proto tcp from <ADMINISTRATORS> to any port 34
+
+# Allow traffic out of the box
+pass out set queue up_normal set prio 1
+pass out to <HOSTED_NETWORKS> set queue up_normal set prio 3
+
+
+# Default firewall rules
+pass in on vlan100 inet proto tcp from { 172.18.248.0/21 } to (em2:network) port 3389 rtable 1 # Microsoft Remote Desktop from NHN Hjemmekontor
+
+# Routing Domain 1 used for LAN
+anchor "inside" on rdomain 1 {
+        # Allow administrative access when on-site
+        pass in quick on em2 inet proto tcp from any to any port 34
+
+        # Internal LAN must be allowed out
+        pass in quick on em2 inet proto { tcp udp } to <VOIP_SERVERS> set queue dn_high set prio 5
+        pass in on em2 set queue dn_normal set prio 1 # set prio 1 turns out to be pri 0
+
+        # Guest network, no access to internal LAN or NHN
+        pass in on em0 to { !(em2:network) !<NHN> } # set prio 1 set queue dn_guest
+
+        pass out quick to <NHN> rtable 0 set queue up_normal set prio 1 # Access to NHN must not be nat'ed
+        pass out quick inet proto { tcp udp } from any to <VOIP_SERVERS> nat-to (egress) rtable 0 set queue up_high set prio 5 set tos af11 # Make sure our Hosted networks have high priority
+        pass out quick to <HOSTED_NETWORKS> nat-to (egress) rtable 0 set queue up_normal set prio 3 # PS Hosting and Networks
+        pass out quick from (em0:network) nat-to (egress) rtable 0 set queue up_guest set prio 1 tag guest_net # guest network
+        pass out to { !(em2:network) } nat-to (egress) rtable 0 set queue up_normal set prio 1 # Regular internet
+}
