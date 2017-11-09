@@ -50,6 +50,7 @@ pass out to <HOSTED_NETWORKS> set queue up_normal set prio 3
 
 # Default firewall rules
 pass in on vlan100 inet proto tcp from { 172.18.248.0/21 } to (em2:network) port 3389 rtable 1 # Microsoft Remote Desktop from NHN Hjemmekontor
+pass in on vlan100 inet proto tcp from { 172.18.248.0/21 } to (em2:network) port 3389 rtable 1 # TEST
 
 # Routing Domain 1 used for LAN
 anchor "inside" on rdomain 1 {
